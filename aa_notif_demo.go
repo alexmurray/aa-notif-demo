@@ -47,13 +47,13 @@ const APPARMOR_NOTIF_SEND = 0xC010F805
 const APPARMOR_NOTIFY_VERSION = 1
 
 /* base notification struct embedded as head of notifications to userspace */
-type apparmor_notif_common struct {
+type AppArmorNotifCommon struct {
 	len     uint16 /* actual len data */
 	version uint16 /* interface version */
 }
 
-type apparmor_notif_filter struct {
-	base    apparmor_notif_common
+type AppArmorNotifFilter struct {
+	base    AppArmorNotifCommon
 	modeset Modeset /* which notification mode */
 	ns      uint32  /* offset into data */
 	filter  uint32  /* offset into data */
@@ -61,8 +61,8 @@ type apparmor_notif_filter struct {
 	data []byte
 }
 
-type apparmor_notif struct {
-	base      apparmor_notif_common
+type AppArmorNotif struct {
+	base      AppArmorNotifCommon
 	ntype     uint16 /* notify type */
 	signalled uint8
 	reserved  uint8
@@ -70,21 +70,21 @@ type apparmor_notif struct {
 	error     int32  /* error if unchanged */
 }
 
-type apparmor_notif_update struct {
-	base apparmor_notif
+type AppArmorNotifUpdate struct {
+	base AppArmorNotif
 	ttl  uint16 /* max keep alives left */
 }
 
 /* userspace response to notification that expects a response */
-type apparmor_notif_resp struct {
-	base  apparmor_notif
+type AppArmorNotifResp struct {
+	base  AppArmorNotif
 	error int32 /* error if unchanged */
 	allow uint32
 	deny  uint32
 }
 
-type apparmor_notif_op struct {
-	base  apparmor_notif
+type AppArmorNotifOp struct {
+	base  AppArmorNotif
 	allow uint32
 	deny  uint32
 	pid_t Pid    /* pid of task causing notification */
@@ -93,8 +93,8 @@ type apparmor_notif_op struct {
 	op    uint16
 }
 
-type apparmor_notif_file struct {
-	base apparmor_notif_op
+type AppArmorNotifFile struct {
+	base AppArmorNotifOp
 	suid Uid
 	ouid Uid
 	name uint32 /* offset into data */
@@ -102,7 +102,7 @@ type apparmor_notif_file struct {
 	data []byte
 }
 
-type aa_notif_base struct {
+type NotifBase struct {
 	id    uint64
 	error int32
 	allow uint32
@@ -113,27 +113,30 @@ type aa_notif_base struct {
 	label []byte
 }
 
-type aa_notif_file struct {
-	base aa_notif_base
+type NotifFile struct {
+	base NotifBase
 	suid Uid
 	ouid Uid
 	name []byte
 }
 
-type aa_notif interface {
+type Notif interface {
 }
 
-type aa_notif_buffer struct {
+type NotifBuffer struct {
 	buffer [4096]byte
 }
 
-func aa_policy_notification_open() (listener int, err error) {
+func PolicyNotificationOpen() (listener int, err error) {
+	// TODO - look this up by parsing /proc/mounts to find where
+	// securityfs is mounted - and then looking within that for
+	// apparmor/.notify - so we can handle non-standard mount locations
 	path := "/sys/kernel/security/apparmor/.notify"
 	return syscall.Open(path, syscall.O_RDWR|syscall.O_NONBLOCK, 0644)
 }
 
-func aa_policy_notification_register(listener int, modeset Modeset) error {
-	var req apparmor_notif_filter
+func PolicyNotificationRegister(listener int, modeset Modeset) error {
+	var req AppArmorNotifFilter
 	req.base.len = uint16(unsafe.Sizeof(req))
 	req.base.version = APPARMOR_NOTIFY_VERSION
 	req.modeset = modeset
@@ -155,16 +158,15 @@ func aa_policy_notification_register(listener int, modeset Modeset) error {
 		panic(fmt.Sprintf("Got unexpected return value %d from ioctl() [expected %d]", uint16(ret), req.base.len))
 	}
 	return nil
-
 }
 
 func main() {
-	listener, err := aa_policy_notification_open()
+	listener, err := PolicyNotificationOpen()
 	if err != nil {
 		panic(fmt.Sprintf("Failed to open AppArmor notification interface: %s", err))
 	}
 
-	err = aa_policy_notification_register(listener, APPARMOR_MODESET_SYNC)
+	err = PolicyNotificationRegister(listener, APPARMOR_MODESET_SYNC)
 	if err != nil {
 		panic(fmt.Sprintf("Failed to register for sync notifications: %s", err))
 	}

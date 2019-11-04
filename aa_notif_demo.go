@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"log"
 	"syscall"
 	"unsafe"
 )
@@ -223,25 +224,34 @@ func ReadNotif(epfd int, notifCh chan Notif) {
 	var timeout int = -1
 	n, err := syscall.EpollWait(epfd, events, timeout)
 	if err != nil {
+		log.Println("Error doing EpollWait()", err)
+		// TODO - handle EAGAIN etc but close for now
 		close(notifCh)
 	}
 	for i := 0; i < n; i++ {
 		event := events[i]
 		if event.Events & syscall.EPOLLIN != 0 {
 			// read via ioctl
-			var req AppArmorNotif
-			req.base.len = uint16(unsafe.Sizeof(req))
-			req.base.version = APPARMOR_NOTIFY_VERSION
-			ret, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(event.Fd), APPARMOR_NOTIF_RECV, uintptr(unsafe.Pointer(&req)))
+			buffer := make([]byte, 4096)
+			var raw *AppArmorNotif = (*AppArmorNotif)(unsafe.Pointer(&buffer))
+			raw.base.len = uint16(cap(buffer))
+			raw.base.version = APPARMOR_NOTIFY_VERSION
+			ret, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(event.Fd), APPARMOR_NOTIF_RECV, uintptr(unsafe.Pointer(&buffer)))
 			if errno != 0 {
-				close(notifCh)
+				log.Println("Error in ioctl(APPARMOR_NOTIF_RECV)", syscall.Errno(errno))
+				continue
 			}
-			if uint16(ret) != 0 {
-				close(notifCh)
+			if int(ret) <= 0 {
+				log.Println("Unexpected return value from ioctl", ret)
+				continue
 			}
-			var out NotifFile
-			out.base.error = req.error
-			notifCh <- out
+			req, err := UnpackNotif(buffer, int(ret))
+			if (err != nil) {
+				log.Println("Failed to unpack AppArmorNotif of length", int(ret))
+				continue
+			}
+			log.Println("Sending req", req)
+			notifCh <- req
 		}
 	}
 }
@@ -249,27 +259,30 @@ func ReadNotif(epfd int, notifCh chan Notif) {
 func main() {
 	fd, err := PolicyNotificationOpen()
 	if err != nil {
-		panic(fmt.Sprintf("Failed to open AppArmor notification interface: %s", err))
+		log.Panic(fmt.Sprintf("Failed to open AppArmor notification interface: %s", err))
 	}
 
 	err = PolicyNotificationRegister(fd, APPARMOR_MODESET_SYNC)
 	if err != nil {
-		panic(fmt.Sprintf("Failed to register for sync notifications: %s", err))
+		log.Panic(fmt.Sprintf("Failed to register for sync notifications: %s", err))
 	}
 
 	epfd, err := syscall.EpollCreate1(syscall.EPOLL_CLOEXEC)
 	if err != nil {
-		panic(fmt.Sprintf("Failed to create epoll fd: %s", err))
+		log.Panic(fmt.Sprintf("Failed to create epoll fd: %s", err))
 	}
 	var event syscall.EpollEvent
 	event.Events = syscall.EPOLLIN | syscall.EPOLLOUT
 	err = syscall.EpollCtl(epfd, syscall.EPOLL_CTL_ADD, fd, &event)
+	if err != nil {
+		log.Panic(fmt.Sprintf("Failed to add epoll fd: %s", err))
+	}
 
 	// read in a separate go-routine
 	notifCh := make(chan Notif)
 	go ReadNotif(epfd, notifCh)
 
 	for req := range notifCh {
-		fmt.Println(req)
+		log.Println("Received req", req)
 	}
 }

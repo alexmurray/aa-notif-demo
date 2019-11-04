@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"syscall"
 	"unsafe"
@@ -32,6 +33,14 @@ const (
 	APPARMOR_NOTIF_INTERUPT           = iota
 	APPARMOR_NOTIF_ALIVE              = iota
 	APPARMOR_NOTIF_OP                 = iota
+)
+
+// AppArmor object classes
+type Class int
+
+const (
+	AA_CLASS_FILE Class = 2
+	AA_CLASS_DBUS = 32
 )
 
 // ioctls
@@ -94,12 +103,16 @@ type AppArmorNotifOp struct {
 }
 
 type AppArmorNotifFile struct {
-	base AppArmorNotifOp
+	op AppArmorNotifOp
 	suid Uid
 	ouid Uid
 	name uint32 /* offset into data */
 
 	data []byte
+}
+
+type AppArmorNotifBuffer struct {
+	buffer [4096]byte
 }
 
 type NotifBase struct {
@@ -110,21 +123,57 @@ type NotifBase struct {
 	pid   Pid
 	class uint16
 	op    uint16
-	label []byte
+	label string
+}
+
+type Notif interface {
+	id() uint64
+	error() int32
+	allow() uint32
+	deny() uint32
+	pid() Pid
+	class() uint16
+	op() uint16
+	label() string
 }
 
 type NotifFile struct {
 	base NotifBase
 	suid Uid
 	ouid Uid
-	name []byte
+	name string
 }
 
-type Notif interface {
+func (n NotifFile) id() uint64 {
+	return n.base.id
 }
 
-type NotifBuffer struct {
-	buffer [4096]byte
+func (n NotifFile) error() int32 {
+	return n.base.error
+}
+
+func (n NotifFile) allow() uint32 {
+	return n.base.allow
+}
+
+func (n NotifFile) deny() uint32 {
+	return n.base.deny
+}
+
+func (n NotifFile) pid() Pid {
+	return n.base.pid
+}
+
+func (n NotifFile) class() uint16 {
+	return n.base.class
+}
+
+func (n NotifFile) op() uint16 {
+	return n.base.op
+}
+
+func (n NotifFile) label() string {
+	return n.base.label
 }
 
 func PolicyNotificationOpen() (listener int, err error) {
@@ -135,19 +184,17 @@ func PolicyNotificationOpen() (listener int, err error) {
 	return syscall.Open(path, syscall.O_RDWR|syscall.O_NONBLOCK, 0644)
 }
 
-func PolicyNotificationRegister(listener int, modeset Modeset) error {
+func PolicyNotificationRegister(fd int, modeset Modeset) error {
 	var req AppArmorNotifFilter
 	req.base.len = uint16(unsafe.Sizeof(req))
 	req.base.version = APPARMOR_NOTIFY_VERSION
 	req.modeset = modeset
-	// no way to specify this currently, so assume is not present for
+	// no way to specify these currently, so assume is not present for
 	// now
 	req.ns = 0
-	// no way to specify this currently, so assume is not present for
-	// now
 	req.filter = 0
 
-	ret, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(listener), APPARMOR_NOTIF_SET_FILTER, uintptr(unsafe.Pointer(&req)))
+	ret, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), APPARMOR_NOTIF_SET_FILTER, uintptr(unsafe.Pointer(&req)))
 	if errno != 0 {
 		return syscall.Errno(errno)
 	}
@@ -155,19 +202,74 @@ func PolicyNotificationRegister(listener int, modeset Modeset) error {
 	// success, this is a way of testing we are getting the structure
 	// args right
 	if uint16(ret) != req.base.len {
-		panic(fmt.Sprintf("Got unexpected return value %d from ioctl() [expected %d]", uint16(ret), req.base.len))
+		return errors.New(fmt.Sprintf("Got unexpected return value %d from ioctl() [expected %d]", uint16(ret), req.base.len))
 	}
 	return nil
 }
 
+func UnpackNotif(buffer []byte, len int) (req Notif, err error) {
+	var base AppArmorNotif
+	if len < int(unsafe.Sizeof(base)) {
+		return req, errors.New(fmt.Sprintf("Notification data is too small to unpack (%d < %d)", len, unsafe.Sizeof(base)))
+	}
+
+	return req, errors.New("Not implemented")
+}
+
+func ReadNotif(epfd int, notifCh chan Notif) {
+	// poll until ready to read so we can do the ioctl only when data
+	// is available
+	var events []syscall.EpollEvent
+	var timeout int = -1
+	n, err := syscall.EpollWait(epfd, events, timeout)
+	if err != nil {
+		close(notifCh)
+	}
+	for i := 0; i < n; i++ {
+		event := events[i]
+		if event.Events & syscall.EPOLLIN != 0 {
+			// read via ioctl
+			var req AppArmorNotif
+			req.base.len = uint16(unsafe.Sizeof(req))
+			req.base.version = APPARMOR_NOTIFY_VERSION
+			ret, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(event.Fd), APPARMOR_NOTIF_RECV, uintptr(unsafe.Pointer(&req)))
+			if errno != 0 {
+				close(notifCh)
+			}
+			if uint16(ret) != 0 {
+				close(notifCh)
+			}
+			var out NotifFile
+			out.base.error = req.error
+			notifCh <- out
+		}
+	}
+}
+
 func main() {
-	listener, err := PolicyNotificationOpen()
+	fd, err := PolicyNotificationOpen()
 	if err != nil {
 		panic(fmt.Sprintf("Failed to open AppArmor notification interface: %s", err))
 	}
 
-	err = PolicyNotificationRegister(listener, APPARMOR_MODESET_SYNC)
+	err = PolicyNotificationRegister(fd, APPARMOR_MODESET_SYNC)
 	if err != nil {
 		panic(fmt.Sprintf("Failed to register for sync notifications: %s", err))
+	}
+
+	epfd, err := syscall.EpollCreate1(syscall.EPOLL_CLOEXEC)
+	if err != nil {
+		panic(fmt.Sprintf("Failed to create epoll fd: %s", err))
+	}
+	var event syscall.EpollEvent
+	event.Events = syscall.EPOLLIN | syscall.EPOLLOUT
+	err = syscall.EpollCtl(epfd, syscall.EPOLL_CTL_ADD, fd, &event)
+
+	// read in a separate go-routine
+	notifCh := make(chan Notif)
+	go ReadNotif(epfd, notifCh)
+
+	for req := range notifCh {
+		fmt.Println(req)
 	}
 }

@@ -68,7 +68,7 @@ type AppArmorNotifFilter struct {
 	ns      uint32  /* offset into data */
 	filter  uint32  /* offset into data */
 
-	data []byte
+	// data []byte
 }
 
 type AppArmorNotif struct {
@@ -109,7 +109,7 @@ type AppArmorNotifFile struct {
 	ouid Uid
 	name uint32 /* offset into data */
 
-	data []byte
+	// data []byte
 }
 
 type AppArmorNotifBuffer struct {

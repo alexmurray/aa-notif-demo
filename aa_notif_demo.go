@@ -37,10 +37,10 @@ const (
 )
 
 // AppArmor object classes
-type Class int
+type Class uint16
 
 const (
-	AA_CLASS_FILE Class = 2
+	AA_CLASS_FILE = 2
 	AA_CLASS_DBUS = 32
 )
 
@@ -97,7 +97,7 @@ type AppArmorNotifOp struct {
 	base  AppArmorNotif
 	allow uint32
 	deny  uint32
-	pid_t Pid    /* pid of task causing notification */
+	pid   Pid    /* pid of task causing notification */
 	label uint32 /* offset into data */
 	class uint16
 	op    uint16
@@ -208,13 +208,57 @@ func PolicyNotificationRegister(fd int, modeset Modeset) error {
 	return nil
 }
 
-func UnpackNotif(buffer []byte, len int) (req Notif, err error) {
-	var base AppArmorNotif
-	if len < int(unsafe.Sizeof(base)) {
-		return req, errors.New(fmt.Sprintf("Notification data is too small to unpack (%d < %d)", len, unsafe.Sizeof(base)))
+// Like C strlen()
+func Strlen(buffer []byte) (size int) {
+	for i, c := range buffer {
+		if c == 0 {
+			return i
+		}
 	}
+	return len(buffer)
+}
 
-	return req, errors.New("Not implemented")
+func UnpackNotif(buffer []byte, len int) (req Notif, err error) {
+	var raw *AppArmorNotifOp
+	var file NotifFile
+	if len < int(unsafe.Sizeof(raw)) {
+		return nil, errors.New(fmt.Sprintf("Notification data is too small to unpack (%d < %d)", len, unsafe.Sizeof(raw)))
+	}
+	raw = (*AppArmorNotifOp)(unsafe.Pointer(&buffer))
+
+	// check length of label is valid
+	if len < int(raw.label) {
+		return nil, errors.New(fmt.Sprintf("Notification data is invalid - label offset is out of bounds (%d < %d)", len, raw.label))
+
+	}
+	switch raw.op {
+	case AA_CLASS_FILE:
+		var rawFile *AppArmorNotifFile
+		if len < int(unsafe.Sizeof(*rawFile)) {
+			return nil, errors.New(fmt.Sprintf("Notification data is too small to unpack as AA_CLASS_FILE (%d < %d)", len, unsafe.Sizeof(*rawFile)))
+		}
+		if len < int(rawFile.name) {
+			return nil, errors.New(fmt.Sprintf("Notification data is invalid - AA_CLASS_FILE name offset is out of bounds (%d < %d)", len, rawFile.name))
+		}
+		rawFile = (*AppArmorNotifFile)(unsafe.Pointer(raw))
+		file.base.id = rawFile.op.base.id
+		file.base.error = rawFile.op.base.error
+		file.base.allow = rawFile.op.allow
+		file.base.deny = rawFile.op.deny
+		file.base.pid = rawFile.op.pid
+		file.base.class = rawFile.op.class
+		file.base.op = rawFile.op.op
+		file.suid = rawFile.suid
+		file.ouid = rawFile.ouid
+		// file.name is start of offset into buffer where the name
+		// starts - we then also need the end so we can slice it as
+		// a string
+		file.name = string(buffer[rawFile.name:(int(rawFile.name) + Strlen(buffer[rawFile.name:]))])
+		req = file
+	default:
+		return nil, errors.New(fmt.Sprintf("Unknown op %d", raw.op))
+	}
+	return req, nil
 }
 
 func ReadNotif(epfd int, notifCh chan Notif) {

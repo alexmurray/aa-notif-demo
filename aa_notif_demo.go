@@ -226,9 +226,17 @@ func UnpackNotif(buffer []byte, len int) (req Notif, err error) {
 	}
 	raw = (*AppArmorNotifOp)(unsafe.Pointer(&buffer))
 
-	// check length of label is valid
-	if len < int(raw.label) {
-		return nil, errors.New(fmt.Sprintf("Notification data is invalid - label offset is out of bounds (%d < %d)", len, raw.label))
+	// check valid version etc
+	if raw.base.base.version != APPARMOR_NOTIFY_VERSION {
+		return nil, errors.New(fmt.Sprintf("Notification data is invalid - version != APPARMOR_NOTIFY_VERSION (%d != %d)", raw.base.base.version, APPARMOR_NOTIFY_VERSION))
+	}
+	if int(raw.base.base.len) != len {
+		return nil, errors.New(fmt.Sprintf("Notification data is invalid - invalid length (%d != %d)", raw.base.base.len, len))
+	}
+
+	// check start and length of label is valid
+	if int(raw.label) < int(unsafe.Sizeof(*raw)) || len < int(raw.label) {
+		return nil, errors.New(fmt.Sprintf("Notification data is invalid - label offset is out of bounds (%d< %d < %d)", unsafe.Sizeof(*raw), raw.label, len))
 
 	}
 	switch raw.op {
@@ -237,8 +245,8 @@ func UnpackNotif(buffer []byte, len int) (req Notif, err error) {
 		if len < int(unsafe.Sizeof(*rawFile)) {
 			return nil, errors.New(fmt.Sprintf("Notification data is too small to unpack as AA_CLASS_FILE (%d < %d)", len, unsafe.Sizeof(*rawFile)))
 		}
-		if len < int(rawFile.name) {
-			return nil, errors.New(fmt.Sprintf("Notification data is invalid - AA_CLASS_FILE name offset is out of bounds (%d < %d)", len, rawFile.name))
+		if int(rawFile.name) < int(unsafe.Sizeof(*rawFile)) || len < int(rawFile.name) {
+			return nil, errors.New(fmt.Sprintf("Notification data is invalid - AA_CLASS_FILE name offset is out of bounds (%d < %d < %d)", unsafe.Sizeof(*rawFile), rawFile.name, len))
 		}
 		rawFile = (*AppArmorNotifFile)(unsafe.Pointer(raw))
 		file.base.id = rawFile.op.base.id

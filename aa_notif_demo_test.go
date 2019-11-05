@@ -3,6 +3,27 @@ package main
 import ("testing"
 	"unsafe")
 
+func TestStrlen(t *testing.T) {
+	buffer := []byte{'A', 'B', 0}
+	expected := 2
+	length := Strlen(buffer)
+	if length != expected {
+		t.Errorf("Expected Strlen() to return %d, got %d", expected, length)
+	}
+	buffer = []byte{'A', 'B', 'C'}
+	expected = 3
+	length = Strlen(buffer)
+	if length != expected {
+		t.Errorf("Expected Strlen() to return %d, got %d", expected, length)
+	}
+	buffer = []byte{0}
+	expected = 0
+	length = Strlen(buffer)
+	if length != expected {
+		t.Errorf("Expected Strlen() to return %d, got %d", expected, length)
+	}
+}
+
 func TestUnpackNotif(t *testing.T) {
 	// test with short data
 	buffer := make([]byte, 1)

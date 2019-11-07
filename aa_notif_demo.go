@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"log"
@@ -9,10 +11,10 @@ import (
 )
 
 // corresponds to pid_t
-type Pid uint32
+type PID uint32
 
 // corresponds to uid_t
-type Uid uint32
+type UID uint32
 
 type Modeset int
 
@@ -58,62 +60,56 @@ const APPARMOR_NOTIFY_VERSION = 1
 
 /* base notification struct embedded as head of notifications to userspace */
 type AppArmorNotifCommon struct {
-	len     uint16 /* actual len data */
-	version uint16 /* interface version */
+	Len     uint16 /* actual len data */
+	Version uint16 /* interface version */
 }
 
 type AppArmorNotifFilter struct {
-	base    AppArmorNotifCommon
-	modeset Modeset /* which notification mode */
-	ns      uint32  /* offset into data */
-	filter  uint32  /* offset into data */
+	Base    AppArmorNotifCommon
+	Modeset Modeset /* which notification mode */
+	NS      uint32  /* offset into data */
+	Filter  uint32  /* offset into data */
 
 	// data []byte
 }
 
 type AppArmorNotif struct {
-	base      AppArmorNotifCommon
-	ntype     uint16 /* notify type */
-	signalled uint8
-	reserved  uint8
-	id        uint64 /* unique id, not gloablly unique*/
-	error     int32  /* error if unchanged */
+	Common    AppArmorNotifCommon
+	NType     uint16 /* notify type */
+	Signalled uint8
+	Reserved  uint8
+	ID        uint64 /* unique id, not gloablly unique*/
+	Error     int32  /* error if unchanged */
 }
 
 type AppArmorNotifUpdate struct {
-	base AppArmorNotif
-	ttl  uint16 /* max keep alives left */
+	Base AppArmorNotif
+	TTL  uint16 /* max keep alives left */
 }
 
 /* userspace response to notification that expects a response */
 type AppArmorNotifResp struct {
-	base  AppArmorNotif
-	error int32 /* error if unchanged */
-	allow uint32
-	deny  uint32
+	Base  AppArmorNotif
+	Error int32 /* error if unchanged */
+	Allow uint32
+	Deny  uint32
 }
 
 type AppArmorNotifOp struct {
-	base  AppArmorNotif
-	allow uint32
-	deny  uint32
-	pid   Pid    /* pid of task causing notification */
-	label uint32 /* offset into data */
-	class uint16
-	op    uint16
+	Base  AppArmorNotif
+	Allow uint32
+	Deny  uint32
+	PID   PID    /* pid of task causing notification */
+	Label uint32 /* offset into data */
+	Class uint16
+	Op    uint16
 }
 
 type AppArmorNotifFile struct {
-	op AppArmorNotifOp
-	suid Uid
-	ouid Uid
-	name uint32 /* offset into data */
-
-	// data []byte
-}
-
-type AppArmorNotifBuffer struct {
-	buffer [4096]byte
+	Op AppArmorNotifOp
+	SUID UID
+	OUID UID
+	Name string
 }
 
 type NotifBase struct {
@@ -121,7 +117,7 @@ type NotifBase struct {
 	error int32
 	allow uint32
 	deny  uint32
-	pid   Pid
+	pid   PID
 	class uint16
 	op    uint16
 	label string
@@ -132,7 +128,7 @@ type Notif interface {
 	error() int32
 	allow() uint32
 	deny() uint32
-	pid() Pid
+	pid() PID
 	class() uint16
 	op() uint16
 	label() string
@@ -140,8 +136,8 @@ type Notif interface {
 
 type NotifFile struct {
 	base NotifBase
-	suid Uid
-	ouid Uid
+	suid UID
+	ouid UID
 	name string
 }
 
@@ -161,7 +157,7 @@ func (n NotifFile) deny() uint32 {
 	return n.base.deny
 }
 
-func (n NotifFile) pid() Pid {
+func (n NotifFile) pid() PID {
 	return n.base.pid
 }
 
@@ -187,13 +183,13 @@ func PolicyNotificationOpen() (listener int, err error) {
 
 func PolicyNotificationRegister(fd int, modeset Modeset) error {
 	var req AppArmorNotifFilter
-	req.base.len = uint16(unsafe.Sizeof(req))
-	req.base.version = APPARMOR_NOTIFY_VERSION
-	req.modeset = modeset
+	req.Base.Len = uint16(unsafe.Sizeof(req))
+	req.Base.Version = APPARMOR_NOTIFY_VERSION
+	req.Modeset = modeset
 	// no way to specify these currently, so assume is not present for
 	// now
-	req.ns = 0
-	req.filter = 0
+	req.NS = 0
+	req.Filter = 0
 
 	ret, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), APPARMOR_NOTIF_SET_FILTER, uintptr(unsafe.Pointer(&req)))
 	if errno != 0 {
@@ -202,8 +198,8 @@ func PolicyNotificationRegister(fd int, modeset Modeset) error {
 	// expect this to echo the size of the data written back on
 	// success, this is a way of testing we are getting the structure
 	// args right
-	if uint16(ret) != req.base.len {
-		return errors.New(fmt.Sprintf("Got unexpected return value %d from ioctl() [expected %d]", uint16(ret), req.base.len))
+	if uint16(ret) != req.Base.Len {
+		return errors.New(fmt.Sprintf("Got unexpected return value %d from ioctl() [expected %d]", uint16(ret), req.Base.Len))
 	}
 	return nil
 }
@@ -219,52 +215,65 @@ func Strlen(buffer []byte) (size int) {
 }
 
 func UnpackNotif(buffer []byte, len int) (req Notif, err error) {
-	var raw *AppArmorNotifOp
-	var file NotifFile
-	if len < int(unsafe.Sizeof(raw)) {
-		return nil, errors.New(fmt.Sprintf("Notification data is too small to unpack (%d < %d)", len, unsafe.Sizeof(raw)))
-	}
-	raw = (*AppArmorNotifOp)(unsafe.Pointer(&buffer))
+	op := new(AppArmorNotifOp)
+	buf := bytes.NewReader(buffer)
 
-	// check valid version etc
-	if raw.base.base.version != APPARMOR_NOTIFY_VERSION {
-		return nil, errors.New(fmt.Sprintf("Notification data is invalid - version != APPARMOR_NOTIFY_VERSION (%d != %d)", raw.base.base.version, APPARMOR_NOTIFY_VERSION))
+	// progressively read and check parameters
+	err = binary.Read(buf, binary.LittleEndian, op)
+	if err != nil {
+		return nil, err
 	}
-	if int(raw.base.base.len) != len {
-		return nil, errors.New(fmt.Sprintf("Notification data is invalid - invalid length (%d != %d)", raw.base.base.len, len))
-	}
-
-	// check start and length of label is valid
-	if int(raw.label) < int(unsafe.Sizeof(*raw)) || len < int(raw.label) {
-		return nil, errors.New(fmt.Sprintf("Notification data is invalid - label offset is out of bounds (%d< %d < %d)", unsafe.Sizeof(*raw), raw.label, len))
+	if op.Base.Common.Version != APPARMOR_NOTIFY_VERSION {
+		return nil, errors.New(fmt.Sprintf("Notification data is invalid - version != APPARMOR_NOTIFY_VERSION (%d != %d)", op.Base.Common.Version, APPARMOR_NOTIFY_VERSION))
 
 	}
-	switch raw.op {
+	if int(op.Base.Common.Len) != len {
+		return nil, errors.New(fmt.Sprintf("Notification data is invalid - invalid length (%d != %d)", op.Base.Common.Len, len))
+	}
+
+	// check label is valid
+	if int(op.Label) > len {
+		return nil, errors.New(fmt.Sprintf("Notification data is invalid - label offset is out of bounds (%d >= %d)", op.Label, len))
+
+	}
+	switch op.Op {
 	case AA_CLASS_FILE:
-		var rawFile *AppArmorNotifFile
-		if len < int(unsafe.Sizeof(*rawFile)) {
-			return nil, errors.New(fmt.Sprintf("Notification data is too small to unpack as AA_CLASS_FILE (%d < %d)", len, unsafe.Sizeof(*rawFile)))
+		// decode remaining file parts
+		file := new(AppArmorNotifFile)
+		err = binary.Read(buf, binary.LittleEndian, &file.SUID)
+		if err != nil {
+			return nil, err
 		}
-		if int(rawFile.name) < int(unsafe.Sizeof(*rawFile)) || len < int(rawFile.name) {
-			return nil, errors.New(fmt.Sprintf("Notification data is invalid - AA_CLASS_FILE name offset is out of bounds (%d < %d < %d)", unsafe.Sizeof(*rawFile), rawFile.name, len))
+		err = binary.Read(buf, binary.LittleEndian, &file.OUID)
+		if err != nil {
+			return nil, err
 		}
-		rawFile = (*AppArmorNotifFile)(unsafe.Pointer(raw))
-		file.base.id = rawFile.op.base.id
-		file.base.error = rawFile.op.base.error
-		file.base.allow = rawFile.op.allow
-		file.base.deny = rawFile.op.deny
-		file.base.pid = rawFile.op.pid
-		file.base.class = rawFile.op.class
-		file.base.op = rawFile.op.op
-		file.suid = rawFile.suid
-		file.ouid = rawFile.ouid
+		var Name uint32
+		err = binary.Read(buf, binary.LittleEndian, Name)
+		if err != nil {
+			return nil, err
+		}
+		if int(Name) > len {
+			return nil, errors.New(fmt.Sprintf("Notification data is invalid - AA_CLASS_FILE name offset is out of bounds (%d > %d)", Name, len))
+		}
+		file.Name = string(buffer[Name:Strlen(buffer[Name:])])
+		out := new(NotifFile)
+		out.base.id = file.Op.Base.ID
+		out.base.error = file.Op.Base.Error
+		out.base.allow = file.Op.Allow
+		out.base.deny = file.Op.Deny
+		out.base.pid = file.Op.PID
+		out.base.class = file.Op.Class
+		out.base.op = file.Op.Op
+		out.suid = file.SUID
+		out.ouid = file.OUID
 		// file.name is start of offset into buffer where the name
 		// starts - we then also need the end so we can slice it as
 		// a string
-		file.name = string(buffer[rawFile.name:(int(rawFile.name) + Strlen(buffer[rawFile.name:]))])
-		req = file
+		out.name = file.Name
+		req = out
 	default:
-		return nil, errors.New(fmt.Sprintf("Unknown op %d", raw.op))
+		return nil, errors.New(fmt.Sprintf("Unknown op %d", op.Op))
 	}
 	return req, nil
 }
@@ -286,8 +295,8 @@ func ReadNotif(epfd int, notifCh chan Notif) {
 			// read via ioctl
 			buffer := make([]byte, 4096)
 			var raw *AppArmorNotif = (*AppArmorNotif)(unsafe.Pointer(&buffer))
-			raw.base.len = uint16(cap(buffer))
-			raw.base.version = APPARMOR_NOTIFY_VERSION
+			raw.Common.Len = uint16(cap(buffer))
+			raw.Common.Version = APPARMOR_NOTIFY_VERSION
 			ret, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(event.Fd), APPARMOR_NOTIF_RECV, uintptr(unsafe.Pointer(&buffer)))
 			if errno != 0 {
 				log.Println("Error in ioctl(APPARMOR_NOTIF_RECV)", syscall.Errno(errno))

@@ -1,7 +1,9 @@
 package main
 
-import ("testing"
-	"unsafe")
+import ("bytes"
+	"testing"
+	"encoding/binary"
+)
 
 func TestStrlen(t *testing.T) {
 	buffer := []byte{'A', 'B', 0}
@@ -24,62 +26,82 @@ func TestStrlen(t *testing.T) {
 	}
 }
 
+func Encode(t *testing.T, file *AppArmorNotifFile, length int) (notif Notif, err error) {
+	// TODO - will only work on LittleEndian platforms
+	buffer := new(bytes.Buffer)
+	// can't write out whole file as contains a string - so write in
+	// parts and encode the Name manually
+	err = binary.Write(buffer, binary.LittleEndian, file.Op)
+	if err != nil {
+		t.Error("Failed to encode for testing", err)
+	}
+	err = binary.Write(buffer, binary.LittleEndian, file.SUID)
+	if err != nil {
+		t.Error("Failed to encode for testing", err)
+	}
+	err = binary.Write(buffer, binary.LittleEndian, file.OUID)
+	if err != nil {
+		t.Error("Failed to encode for testing", err)
+	}
+	var Name uint32 = uint32(len(file.Name))
+	err = binary.Write(buffer, binary.LittleEndian, Name)
+	if err != nil {
+		t.Error("Failed to encode for testing", err)
+	}
+	// encode Name as a byte array with a trailing 0
+	if Name > 0 {
+		file.Name += string(0)
+		err = binary.Write(buffer, binary.LittleEndian, []byte(file.Name))
+		if err != nil {
+			t.Error("Failed to encode for testing", err)
+		}
+	}
+	if length == -1 {
+		length = buffer.Cap()
+	}
+	file.Op.Base.Common.Len = uint16(length)
+	return UnpackNotif(buffer.Bytes(), length)
+}
+func EncodeAndExpectNoError(t *testing.T, file *AppArmorNotifFile, len int) {
+	notif, err := Encode(t, file, len)
+	if notif == nil {
+		t.Error("Expected UnpackNotif() to pass and return a Notif ", err)
+	}
+	t.Log("Expected pass", notif)
+}
+
+func EncodeAndExpectError(t *testing.T, file *AppArmorNotifFile, len int) {
+	notif, err := Encode(t, file, len)
+	if notif != nil || err == nil {
+		t.Error("Expected UnpackNotif() to return an error ", notif)
+	}
+	t.Log("Expected error", err)
+}
+
 func TestUnpackNotif(t *testing.T) {
 	// test with short data
-	buffer := make([]byte, 1)
-	Notif, err := UnpackNotif(buffer, cap(buffer))
-	if Notif != nil || err == nil {
-		t.Errorf("Expected UnpackNotif() to return an error")
-	}
-	t.Log(err)
-
-	// long enough but all zeros - so will fail version test
-	buffer = make([]byte, 1024)
-	Notif, err = UnpackNotif(buffer, cap(buffer))
-	if Notif != nil || err == nil {
-		t.Errorf("Expected UnpackNotif() to return an error")
-	}
-	t.Log(err)
+	file := AppArmorNotifFile{}
+	EncodeAndExpectError(t, &file, 10)
 
 	// progressively set various parts until we get success
-	var op *AppArmorNotifOp = (*AppArmorNotifOp)(unsafe.Pointer(&buffer))
-	op.base.base.version = APPARMOR_NOTIFY_VERSION
-	Notif, err = UnpackNotif(buffer, cap(buffer))
-	if Notif != nil || err == nil {
-		t.Errorf("Expected UnpackNotif() to return an error")
-	}
-	t.Log(err)
+	// length (-1 means use full encoded length)
+	EncodeAndExpectError(t, &file, -1)
 
-	t.Log(op.base.base.len)
-	var length *uint16 = (*uint16)(unsafe.Pointer(&buffer[unsafe.Offsetof(op.base.base.len) + unsafe.Sizeof(op.base.base.len)]))
-	*length = uint16(unsafe.Sizeof(*op))
-	t.Log(op.base.base.len)
-	Notif, err = UnpackNotif(buffer, int(unsafe.Sizeof(*op)))
-	if Notif != nil || err == nil {
-		t.Errorf("Expected UnpackNotif() to return an error")
-	}
-	t.Log(err)
+	// version
+	file.Op.Base.Common.Version = APPARMOR_NOTIFY_VERSION
+	EncodeAndExpectError(t, &file, -1)
 
-	// set a label
-	start := unsafe.Sizeof(op)
-	name := "foo"
-	for i := 0; i < len(name); i++ {
-		buffer[int(start) + i] = name[i]
-	}
-	buffer[unsafe.Offsetof(op.label)] = byte(start)
-	t.Log("label", op.label)
-	// segfaults when trying to set as a 32-bit number
-	// op.label = uint32(start)
-	Notif, err = UnpackNotif(buffer, int(unsafe.Sizeof(*op)))
-	if Notif != nil || err == nil {
-		t.Errorf("Expected UnpackNotif() to return an error")
-	}
-	t.Log(err)
+	// op
+	file.Op.Op = AA_CLASS_FILE
+	EncodeAndExpectNoError(t, &file, -1)
 
-	op.op = AA_CLASS_FILE
-	Notif, err = UnpackNotif(buffer, cap(buffer))
-	if Notif != nil || err == nil {
-		t.Errorf("Expected UnpackNotif() to return an error")
-	}
-	t.Log(err)
+	file.Name = "foo"
+	EncodeAndExpectNoError(t, &file, -1)
+
+	// file.file = AA_CLASS_FILE
+	// Notif, err = UnpackNotif(buffer.Bytes(), cap(buffer))
+	// if Notif != nil || err == nil {
+	// 	t.Errorf("Expected UnpackNotif() to return an error")
+	// }
+	// t.Log(err)
 }

@@ -28,10 +28,8 @@ const (
 	APPARMOR_MODESET_ERROR            = 64
 )
 
-type NotifType int
-
 const (
-	APPARMOR_NOTIF_RESP     NotifType = iota
+	APPARMOR_NOTIF_RESP               = iota // starts at 0
 	APPARMOR_NOTIF_CANCEL             = iota
 	APPARMOR_NOTIF_INTERUPT           = iota
 	APPARMOR_NOTIF_ALIVE              = iota
@@ -278,45 +276,6 @@ func UnpackNotif(buffer []byte, len int) (req Notif, err error) {
 	return req, nil
 }
 
-func ReadNotif(epfd int, notifCh chan Notif) {
-	// poll until ready to read so we can do the ioctl only when data
-	// is available
-	var events []syscall.EpollEvent
-	var timeout int = -1
-	n, err := syscall.EpollWait(epfd, events, timeout)
-	if err != nil {
-		log.Println("Error doing EpollWait()", err)
-		// TODO - handle EAGAIN etc but close for now
-		close(notifCh)
-	}
-	for i := 0; i < n; i++ {
-		event := events[i]
-		if event.Events & syscall.EPOLLIN != 0 {
-			// read via ioctl
-			buffer := make([]byte, 4096)
-			var raw *AppArmorNotif = (*AppArmorNotif)(unsafe.Pointer(&buffer))
-			raw.Common.Len = uint16(cap(buffer))
-			raw.Common.Version = APPARMOR_NOTIFY_VERSION
-			ret, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(event.Fd), APPARMOR_NOTIF_RECV, uintptr(unsafe.Pointer(&buffer)))
-			if errno != 0 {
-				log.Println("Error in ioctl(APPARMOR_NOTIF_RECV)", syscall.Errno(errno))
-				continue
-			}
-			if int(ret) <= 0 {
-				log.Println("Unexpected return value from ioctl", ret)
-				continue
-			}
-			req, err := UnpackNotif(buffer, int(ret))
-			if (err != nil) {
-				log.Println("Failed to unpack AppArmorNotif of length", int(ret))
-				continue
-			}
-			log.Println("Sending req", req)
-			notifCh <- req
-		}
-	}
-}
-
 func main() {
 	fd, err := PolicyNotificationOpen()
 	if err != nil {
@@ -339,11 +298,90 @@ func main() {
 		log.Panic(fmt.Sprintf("Failed to add epoll fd: %s", err))
 	}
 
-	// read in a separate go-routine
-	notifCh := make(chan Notif)
-	go ReadNotif(epfd, notifCh)
+	for {
+		// poll until ready to read so we can do the ioctl only when data
+		// is available
+		var events []syscall.EpollEvent
+		var timeout int = -1
+		n, err := syscall.EpollWait(epfd, events, timeout)
+		if err != nil {
+			log.Println("Error doing EpollWait()", err)
+			// TODO - handle EAGAIN etc? but exit for now
+			break
+		}
+		for i := 0; i < n; i++ {
+			event := events[i]
+			if event.Events & syscall.EPOLLIN != 0 {
+				// read via ioctl
+				raw := AppArmorNotifCommon{}
+				raw.Len = 4096
+				raw.Version = APPARMOR_NOTIFY_VERSION
 
-	for req := range notifCh {
-		log.Println("Received req", req)
+				// encode as a 4096 byte array
+				buffer := new(bytes.Buffer)
+				err := binary.Write(buffer, binary.LittleEndian, raw)
+				if err != nil {
+					log.Println("Error encoding header for APPARMOR_NOTIF_RECV ioctl()", err)
+				}
+				// set the rest to zero and expand length
+				// of array in the process
+				for i := 0; i < int(raw.Len) - 4; i++ {
+					var zero byte = 0
+					err := binary.Write(buffer, binary.LittleEndian, zero)
+					if err != nil {
+						log.Println("Error encoding remaining data for APPARMOR_NOTIF_RECV ioctl()", err)
+					}
+				}
+				data := buffer.Bytes()
+				ret, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(event.Fd), APPARMOR_NOTIF_RECV, uintptr(unsafe.Pointer(&data)))
+				if errno != 0 {
+					log.Println("Error in ioctl(APPARMOR_NOTIF_RECV)", syscall.Errno(errno))
+					continue
+				}
+				if int(ret) <= 0 {
+					log.Println("Unexpected return value from ioctl", ret)
+					continue
+				}
+				req, err := UnpackNotif(data, int(ret))
+				if (err != nil) {
+					log.Println("Failed to unpack AppArmorNotif of length", int(ret))
+					// TODO - we should still send a response
+					continue
+				}
+				log.Println("Received req", req)
+
+				// TODO - implement decision logic :)
+
+				resp := AppArmorNotifResp{}
+				resp.Base.Common.Version = APPARMOR_NOTIFY_VERSION
+				resp.Base.Common.Len = uint16(unsafe.Sizeof(resp))
+				resp.Base.NType = APPARMOR_NOTIF_RESP
+				resp.Base.ID = req.id()
+
+				// send back response as ok
+				resp.Error = 0
+				resp.Allow = req.allow()
+				resp.Deny = 0
+
+				buffer = new(bytes.Buffer)
+				err = binary.Write(buffer, binary.LittleEndian, resp)
+				if err != nil {
+					log.Println("Error encoding response to APPARMOR_NOTIF_RESP - unable to reply", err)
+					continue
+				}
+				data = buffer.Bytes()
+				ret, _, errno = syscall.Syscall(syscall.SYS_IOCTL, uintptr(event.Fd), APPARMOR_NOTIF_SEND, uintptr(unsafe.Pointer(&data)))
+				if errno != 0 {
+					log.Println("Error in ioctl(APPARMOR_NOTIF_SEND)", syscall.Errno(errno))
+					continue
+				}
+				if ret != unsafe.Sizeof(resp) {
+					log.Println("Unexpected return value from ioctl", ret)
+					continue
+				}
+			}
+		}
+
 	}
+
 }

@@ -5,6 +5,42 @@ import ("bytes"
 	"encoding/binary"
 )
 
+func TestPolicyNotificationOpen(t *testing.T) {
+	fd, err := PolicyNotificationOpen()
+	if fd < 0 {
+		if err == nil {
+			t.Errorf("Expected an error but none given for fd %d", fd)
+		} else {
+			t.Log("Expected and got error:", err)
+		}
+	} else {
+		if err != nil {
+			t.Error("Expected no error but got one:", err)
+		}
+	}
+}
+
+func TestPolicyNotificationRegister(t *testing.T) {
+	var expected bool
+	fd, err := PolicyNotificationOpen()
+	if err != nil {
+		expected = true
+	}
+	// if fd is invalid or already have err then don't expect this to work
+	err = PolicyNotificationRegister(fd, APPARMOR_MODESET_SYNC)
+	if expected  {
+		if err == nil {
+			t.Error("Expected error but success!")
+		} else {
+			t.Log("Expected and got error:", err)
+		}
+	} else {
+		if err != nil {
+			t.Error("Expected success but failed:", err)
+		}
+	}
+}
+
 func TestStrlen(t *testing.T) {
 	buffer := []byte{'A', 'B', 0}
 	expected := 2

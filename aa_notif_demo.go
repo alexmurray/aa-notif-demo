@@ -379,9 +379,9 @@ func main() {
 					log.Println("Unexpected return value from ioctl", ret)
 					continue
 				}
+			} else {
+				log.Println(fmt.Sprintf("Unhandled epoll event 0x%x", event.Events))
 			}
 		}
-
 	}
-
 }

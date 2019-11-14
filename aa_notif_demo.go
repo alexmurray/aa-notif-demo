@@ -40,9 +40,6 @@ const (
 	APPARMOR_NOTIF_OP                 = iota
 )
 
-// AppArmor object classes
-type Class uint16
-
 const (
 	AA_CLASS_FILE = 2
 	AA_CLASS_DBUS = 32

@@ -303,23 +303,23 @@ func UnpackNotif(buffer []byte, len int) (req Notif, err error) {
 func main() {
 	fd, err := PolicyNotificationOpen()
 	if err != nil {
-		log.Panic(fmt.Sprintf("Failed to open AppArmor notification interface: %s", err))
+		log.Fatalf("Failed to open AppArmor notification interface: %s", err)
 	}
 
 	err = PolicyNotificationRegister(fd, APPARMOR_MODESET_SYNC)
 	if err != nil {
-		log.Panic(fmt.Sprintf("Failed to register for sync notifications: %s", err))
+		log.Fatalf("Failed to register for sync notifications: %s", err)
 	}
 
 	epfd, err := syscall.EpollCreate1(syscall.EPOLL_CLOEXEC)
 	if err != nil {
-		log.Panic(fmt.Sprintf("Failed to create epoll fd: %s", err))
+		log.Fatalf("Failed to create epoll fd: %s", err)
 	}
 	var event syscall.EpollEvent
 	event.Events = syscall.EPOLLIN | syscall.EPOLLOUT
 	err = syscall.EpollCtl(epfd, syscall.EPOLL_CTL_ADD, fd, &event)
 	if err != nil {
-		log.Panic(fmt.Sprintf("Failed to add epoll fd: %s", err))
+		log.Fatalf("Failed to add epoll fd: %s", err)
 	}
 
 	for {

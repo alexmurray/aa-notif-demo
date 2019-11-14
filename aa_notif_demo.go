@@ -16,7 +16,7 @@ type PID uint32
 // corresponds to uid_t
 type UID uint32
 
-type Modeset int
+type Modeset uint32
 
 const (
 	APPARMOR_MODESET_COMPLAIN Modeset = 1
@@ -54,7 +54,7 @@ const APPARMOR_NOTIF_IS_ID_VALID = 0x8008F803
 const APPARMOR_NOTIF_RECV = 0xC008F804
 const APPARMOR_NOTIF_SEND = 0xC008F805
 
-const APPARMOR_NOTIFY_VERSION = 1
+const APPARMOR_NOTIFY_VERSION = 2
 
 /* base notification struct embedded as head of notifications to userspace */
 type AppArmorNotifCommon struct {
@@ -67,8 +67,6 @@ type AppArmorNotifFilter struct {
 	Modeset Modeset /* which notification mode */
 	NS      uint32  /* offset into data */
 	Filter  uint32  /* offset into data */
-
-	// data []byte
 }
 
 type AppArmorNotif struct {

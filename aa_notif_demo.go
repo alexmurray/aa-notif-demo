@@ -22,13 +22,14 @@ type UID uint32
 type Modeset uint32
 
 const (
-	APPARMOR_MODESET_COMPLAIN Modeset = 1
-	APPARMOR_MODESET_ENFORCE          = 2
-	APPARMOR_MODESET_HINT             = 4
-	APPARMOR_MODESET_STATUS           = 8
-	APPARMOR_MODESET_SYNC             = 16
-	APPARMOR_MODESET_KILL             = 32
-	APPARMOR_MODESET_ERROR            = 64
+	APPARMOR_MODESET_AUDIT Modeset = 1
+	APPARMOR_MODESET_ALLOW          = 2
+	APPARMOR_MODESET_ENFORCE          = 4
+	APPARMOR_MODESET_HINT             = 8
+	APPARMOR_MODESET_STATUS           = 16
+	APPARMOR_MODESET_ERROR             = 32
+	APPARMOR_MODESET_KILL             = 64
+	APPARMOR_MODESET_USER            = 128
 )
 
 const (
@@ -305,11 +306,13 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to open AppArmor notification interface: %s", err)
 	}
+	log.Printf("Opened notification interface")
 
-	err = PolicyNotificationRegister(fd, APPARMOR_MODESET_SYNC)
+	err = PolicyNotificationRegister(fd, APPARMOR_MODESET_USER)
 	if err != nil {
 		log.Fatalf("Failed to register for sync notifications: %s", err)
 	}
+	log.Printf("Registered listener")
 
 	epfd, err := syscall.EpollCreate1(syscall.EPOLL_CLOEXEC)
 	if err != nil {

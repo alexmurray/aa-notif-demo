@@ -324,7 +324,7 @@ func main() {
 		var timeout int = -1
 		n, err := syscall.EpollWait(epfd, events, timeout)
 		if err != nil {
-			log.Println("Error doing EpollWait()", err)
+			log.Printf("Error doing EpollWait(): %s\n", err)
 			// TODO - handle EAGAIN etc? but exit for now
 			break
 		}
@@ -340,7 +340,7 @@ func main() {
 				buffer := new(bytes.Buffer)
 				err := binary.Write(buffer, binary.LittleEndian, raw)
 				if err != nil {
-					log.Println("Error encoding header for APPARMOR_NOTIF_RECV ioctl()", err)
+					log.Printf("Error encoding header for APPARMOR_NOTIF_RECV ioctl(): %s\n", err)
 				}
 				// set the rest to zero and expand length
 				// of array in the process
@@ -348,22 +348,22 @@ func main() {
 					var zero byte = 0
 					err := binary.Write(buffer, binary.LittleEndian, zero)
 					if err != nil {
-						log.Println("Error encoding remaining data for APPARMOR_NOTIF_RECV ioctl()", err)
+						log.Printf("Error encoding remaining data for APPARMOR_NOTIF_RECV ioctl(): %s\n", err)
 					}
 				}
 				data := buffer.Bytes()
 				ret, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(event.Fd), APPARMOR_NOTIF_RECV, uintptr(unsafe.Pointer(&data)))
 				if errno != 0 {
-					log.Println("Error in ioctl(APPARMOR_NOTIF_RECV)", syscall.Errno(errno))
+					log.Printf("Error in ioctl(APPARMOR_NOTIF_RECV): %d\n", syscall.Errno(errno))
 					continue
 				}
 				if int(ret) <= 0 {
-					log.Println("Unexpected return value from ioctl", ret)
+					log.Printf("Unexpected return value from ioctl: %d\n", ret)
 					continue
 				}
 				req, err := UnpackNotif(data, int(ret))
 				if (err != nil) {
-					log.Println("Failed to unpack AppArmorNotif of length", int(ret))
+					log.Printf("Failed to unpack AppArmorNotif of length %d\n", int(ret))
 					// TODO - we should still send a response
 					continue
 				}
@@ -399,7 +399,7 @@ func main() {
 					continue
 				}
 			} else {
-				log.Println(fmt.Sprintf("Unhandled epoll event 0x%x", event.Events))
+				log.Printf("Unhandled epoll event 0x%x\n", event.Events)
 			}
 		}
 	}

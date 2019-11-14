@@ -325,9 +325,9 @@ func main() {
 	for {
 		// poll until ready to read so we can do the ioctl only when data
 		// is available
-		var events []syscall.EpollEvent
+		var events [10]syscall.EpollEvent
 		var timeout int = -1
-		n, err := syscall.EpollWait(epfd, events, timeout)
+		n, err := syscall.EpollWait(epfd, events[:], timeout)
 		if err != nil {
 			log.Printf("Error doing EpollWait(): %s\n", err)
 			// TODO - handle EAGAIN etc? but exit for now
@@ -417,8 +417,9 @@ func main() {
 					continue
 				}
 				log.Printf("replied\n")
-			} else {
-				log.Printf("Unhandled epoll event 0x%x\n", event.Events)
+			} else if event.Events & syscall.EPOLLOUT != 0 {
+				// ignore EPOLLOUT for now
+				continue
 			}
 		}
 	}

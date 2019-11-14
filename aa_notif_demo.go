@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"log"
+	"os"
+	"strings"
 	"syscall"
 	"unsafe"
 )
@@ -170,10 +173,28 @@ func (n NotifFile) label() string {
 }
 
 func PolicyNotificationOpen() (listener int, err error) {
-	// TODO - look this up by parsing /proc/mounts to find where
-	// securityfs is mounted - and then looking within that for
-	// apparmor/.notify - so we can handle non-standard mount locations
-	path := "/sys/kernel/security/apparmor/.notify"
+	var base string = ""
+	f, err := os.OpenFile("/proc/mounts", os.O_RDONLY, os.ModePerm)
+	if err != nil {
+		return -1, err
+	}
+	defer f.Close()
+
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := sc.Text()
+		parts := strings.Split(line, " ")
+		if parts[0] == "securityfs" {
+			_, err := os.Stat(parts[1] + "/apparmor")
+			if (err == nil) {
+				base = parts[1] + "/apparmor"
+				break			}
+		}
+	}
+	if (base == "") {
+		return -1, errors.New("Unable to find securityfs in /proc/mounts - is it mounted?")
+	}
+	path := base + "/.notify"
 	return syscall.Open(path, syscall.O_RDWR|syscall.O_NONBLOCK, 0644)
 }
 

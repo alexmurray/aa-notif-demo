@@ -1,8 +1,9 @@
 package main
 
-import ("bytes"
-	"testing"
+import (
+	"bytes"
 	"encoding/binary"
+	"testing"
 )
 
 func TestPolicyNotificationOpen(t *testing.T) {
@@ -28,7 +29,7 @@ func TestPolicyNotificationRegister(t *testing.T) {
 	}
 	// if fd is invalid or already have err then don't expect this to work
 	err = PolicyNotificationRegister(fd, APPARMOR_MODESET_USER)
-	if expected  {
+	if expected {
 		if err == nil {
 			t.Error("Expected error but success!")
 		} else {
@@ -168,7 +169,7 @@ func TestUnpackNotif(t *testing.T) {
 		0x6e, 0x2f, 0x63, 0x61, 0x74, 0x32, 0x2f, 0x63, 0x61, 0x74, 0x50, 0x37, 0x57, 0x6f, 0x47,
 		0x74, 0x00}
 	notif, err := UnpackNotif(data, len(data))
-	if (err != nil) {
+	if err != nil {
 		t.Errorf("Failed to decode notif: %s", err)
 	} else {
 		// check notif is valid

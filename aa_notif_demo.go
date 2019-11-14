@@ -22,22 +22,22 @@ type UID uint32
 type Modeset uint32
 
 const (
-	APPARMOR_MODESET_AUDIT Modeset = 1
-	APPARMOR_MODESET_ALLOW          = 2
-	APPARMOR_MODESET_ENFORCE          = 4
-	APPARMOR_MODESET_HINT             = 8
-	APPARMOR_MODESET_STATUS           = 16
-	APPARMOR_MODESET_ERROR             = 32
-	APPARMOR_MODESET_KILL             = 64
+	APPARMOR_MODESET_AUDIT   Modeset = 1
+	APPARMOR_MODESET_ALLOW           = 2
+	APPARMOR_MODESET_ENFORCE         = 4
+	APPARMOR_MODESET_HINT            = 8
+	APPARMOR_MODESET_STATUS          = 16
+	APPARMOR_MODESET_ERROR           = 32
+	APPARMOR_MODESET_KILL            = 64
 	APPARMOR_MODESET_USER            = 128
 )
 
 const (
-	APPARMOR_NOTIF_RESP               = iota // starts at 0
-	APPARMOR_NOTIF_CANCEL             = iota
-	APPARMOR_NOTIF_INTERUPT           = iota
-	APPARMOR_NOTIF_ALIVE              = iota
-	APPARMOR_NOTIF_OP                 = iota
+	APPARMOR_NOTIF_RESP     = iota // starts at 0
+	APPARMOR_NOTIF_CANCEL   = iota
+	APPARMOR_NOTIF_INTERUPT = iota
+	APPARMOR_NOTIF_ALIVE    = iota
+	APPARMOR_NOTIF_OP       = iota
 )
 
 const (
@@ -77,7 +77,7 @@ type AppArmorNotif struct {
 	Reserved  uint8
 	ID        uint64 /* unique id, not gloablly unique*/
 	Error     int32  /* error if unchanged */
-	Padding   int32 // pad to 64-bit aligned
+	Padding   int32  // pad to 64-bit aligned
 }
 
 type AppArmorNotifUpdate struct {
@@ -94,18 +94,18 @@ type AppArmorNotifResp struct {
 }
 
 type AppArmorNotifOp struct {
-	Base  AppArmorNotif
-	Allow uint32
-	Deny  uint32
-	PID   PID    /* pid of task causing notification */
-	Label uint32 /* offset into data */
-	Class uint16
-	Op    uint16
+	Base    AppArmorNotif
+	Allow   uint32
+	Deny    uint32
+	PID     PID    /* pid of task causing notification */
+	Label   uint32 /* offset into data */
+	Class   uint16
+	Op      uint16
 	Padding uint32 // pad to 64 bit aligned
 }
 
 type AppArmorNotifFile struct {
-	Op AppArmorNotifOp
+	Op   AppArmorNotifOp
 	SUID UID
 	OUID UID
 	Name uint32
@@ -191,12 +191,13 @@ func PolicyNotificationOpen() (listener int, err error) {
 		parts := strings.Split(line, " ")
 		if parts[0] == "securityfs" {
 			_, err := os.Stat(parts[1] + "/apparmor")
-			if (err == nil) {
+			if err == nil {
 				base = parts[1] + "/apparmor"
-				break			}
+				break
+			}
 		}
 	}
-	if (base == "") {
+	if base == "" {
 		return -1, errors.New("Unable to find securityfs in /proc/mounts - is it mounted?")
 	}
 	path := base + "/.notify"
@@ -306,7 +307,7 @@ func UnpackNotif(buffer []byte, len int) (req Notif, err error) {
 
 func DumpBytes(data []byte, len int) {
 	for i := 0; i < len; i++ {
-		if i % 15 == 0 {
+		if i%15 == 0 {
 			fmt.Printf("\n")
 		}
 		fmt.Printf(" 0x%.2x", data[i])
@@ -328,7 +329,7 @@ func RecvNotif(fd int) (req Notif, err error) {
 	}
 	// set the rest to zero and expand length
 	// of array in the process
-	for i := 0; i < int(raw.Len) - int(buffer.Len()); i++ {
+	for i := 0; i < int(raw.Len)-int(buffer.Len()); i++ {
 		var zero byte = 0
 		err = binary.Write(buffer, binary.LittleEndian, zero)
 		if err != nil {
@@ -350,7 +351,7 @@ func RecvNotif(fd int) (req Notif, err error) {
 		return
 	}
 	req, err = UnpackNotif(data[:], int(ret))
-	if (err != nil) {
+	if err != nil {
 		log.Printf("Failed to unpack AppArmorNotif of length %d: %s\n", int(ret), err)
 		DumpBytes(data[:], int(ret))
 		return
@@ -422,7 +423,7 @@ func main() {
 		reader := bufio.NewReader(os.Stdin)
 		for i := 0; i < n; i++ {
 			event := events[i]
-			if event.Events & syscall.EPOLLIN != 0 {
+			if event.Events&syscall.EPOLLIN != 0 {
 				req, err := RecvNotif(fd)
 				if err != nil {
 					log.Printf("Failed to recv notif: %s", err)
@@ -431,13 +432,13 @@ func main() {
 
 				log.Println("Received req", req)
 				response := ""
-				for  {
+				for {
 					fmt.Printf("Allow profile: %s to access: '%s' allow 0x%x deny 0x%x error: %d (y/n) > ",
 						req.label(), req.file().name, req.allow(), req.deny(), req.error())
 					line, _ := reader.ReadString('\n')
 					// strip newline etc
 					response = strings.Replace(line, "\n", "", -1)
-					if (strings.Compare(response, "y") == 0 || strings.Compare(response, "n") == 0) {
+					if strings.Compare(response, "y") == 0 || strings.Compare(response, "n") == 0 {
 						break
 					}
 				}
@@ -462,7 +463,7 @@ func main() {
 				if err != nil {
 					log.Printf("Failed to send notif: %s", err)
 				}
-			} else if event.Events & syscall.EPOLLOUT != 0 {
+			} else if event.Events&syscall.EPOLLOUT != 0 {
 				// ignore EPOLLOUT for now
 				continue
 			}

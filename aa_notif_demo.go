@@ -375,7 +375,7 @@ func SendNotif(fd int, resp AppArmorNotifResp) (err error) {
 		err = syscall.Errno(errno)
 		return
 	}
-	if ret != unsafe.Sizeof(resp) {
+	if int(ret) != binary.Size(resp) {
 		err = errors.New(fmt.Sprintf("Unexpected return value from ioctl: %d", ret))
 		return
 	}

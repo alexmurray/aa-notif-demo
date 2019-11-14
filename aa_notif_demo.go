@@ -77,6 +77,7 @@ type AppArmorNotif struct {
 	Reserved  uint8
 	ID        uint64 /* unique id, not gloablly unique*/
 	Error     int32  /* error if unchanged */
+	Padding   int32 // pad to 64-bit aligned
 }
 
 type AppArmorNotifUpdate struct {
@@ -100,13 +101,14 @@ type AppArmorNotifOp struct {
 	Label uint32 /* offset into data */
 	Class uint16
 	Op    uint16
+	Padding uint32 // pad to 64 bit aligned
 }
 
 type AppArmorNotifFile struct {
 	Op AppArmorNotifOp
 	SUID UID
 	OUID UID
-	Name string
+	Name uint32
 }
 
 type NotifBase struct {
@@ -256,10 +258,21 @@ func UnpackNotif(buffer []byte, len int) (req Notif, err error) {
 		return nil, errors.New(fmt.Sprintf("Notification data is invalid - label offset is out of bounds (%d >= %d)", op.Label, len))
 
 	}
-	switch op.Op {
+	// parse common parts
+	base := NotifBase{}
+	base.label = string(buffer[op.Label:(int(op.Label) + Strlen(buffer[op.Label:]))])
+	base.id = op.Base.ID
+	base.error = op.Base.Error
+	base.allow = op.Allow
+	base.deny = op.Deny
+	base.pid = op.PID
+	base.class = op.Class
+	base.op = op.Op
+
+	switch op.Class {
 	case AA_CLASS_FILE:
 		// decode remaining file parts
-		file := new(AppArmorNotifFile)
+		file := AppArmorNotifFile{}
 		err = binary.Read(buf, binary.LittleEndian, &file.SUID)
 		if err != nil {
 			return nil, err
@@ -268,34 +281,105 @@ func UnpackNotif(buffer []byte, len int) (req Notif, err error) {
 		if err != nil {
 			return nil, err
 		}
-		var Name uint32
-		err = binary.Read(buf, binary.LittleEndian, Name)
+		err = binary.Read(buf, binary.LittleEndian, &file.Name)
 		if err != nil {
 			return nil, err
 		}
-		if int(Name) > len {
-			return nil, errors.New(fmt.Sprintf("Notification data is invalid - AA_CLASS_FILE name offset is out of bounds (%d > %d)", Name, len))
+
+		if int(file.Name) > len {
+			return nil, errors.New(fmt.Sprintf("Notification data is invalid - AA_CLASS_FILE name offset is out of bounds (%d > %d)", file.Name, len))
 		}
-		file.Name = string(buffer[Name:Strlen(buffer[Name:])])
-		out := new(NotifFile)
-		out.base.id = file.Op.Base.ID
-		out.base.error = file.Op.Base.Error
-		out.base.allow = file.Op.Allow
-		out.base.deny = file.Op.Deny
-		out.base.pid = file.Op.PID
-		out.base.class = file.Op.Class
-		out.base.op = file.Op.Op
+
+		out := NotifFile{}
+		out.base = base
 		out.suid = file.SUID
 		out.ouid = file.OUID
 		// file.name is start of offset into buffer where the name
 		// starts - we then also need the end so we can slice it as
 		// a string
-		out.name = file.Name
-		req = out
+		out.name = string(buffer[file.Name:(int(file.Name) + Strlen(buffer[file.Name:]))])
+		return out, nil
 	default:
-		return nil, errors.New(fmt.Sprintf("Unknown op %d", op.Op))
+		return nil, errors.New(fmt.Sprintf("Unknown class %d", op.Class))
 	}
-	return req, nil
+}
+
+func DumpBytes(data []byte, len int) {
+	for i := 0; i < len; i++ {
+		if i % 15 == 0 {
+			fmt.Printf("\n")
+		}
+		fmt.Printf(" 0x%.2x", data[i])
+	}
+	fmt.Printf("\n")
+}
+
+func RecvNotif(fd int) (req Notif, err error) {
+	// read via ioctl
+	raw := AppArmorNotifCommon{}
+	raw.Len = 4096
+	raw.Version = APPARMOR_NOTIFY_VERSION
+
+	// encode as a 4096 byte array
+	buffer := new(bytes.Buffer)
+	err = binary.Write(buffer, binary.LittleEndian, raw)
+	if err != nil {
+		return
+	}
+	// set the rest to zero and expand length
+	// of array in the process
+	for i := 0; i < int(raw.Len) - int(buffer.Len()); i++ {
+		var zero byte = 0
+		err = binary.Write(buffer, binary.LittleEndian, zero)
+		if err != nil {
+			return
+		}
+	}
+	data := new([4096]byte)
+	// copy in encoded data
+	for i := 0; i < cap(data); i++ {
+		data[i], _ = buffer.ReadByte()
+	}
+	ret, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), APPARMOR_NOTIF_RECV, uintptr(unsafe.Pointer(data)))
+	if errno != 0 {
+		err = syscall.Errno(errno)
+		return
+	}
+	if int(ret) <= 0 {
+		err = errors.New(fmt.Sprintf("Unexpected return value from ioctl: %d\n", ret))
+		return
+	}
+	req, err = UnpackNotif(data[:], int(ret))
+	if (err != nil) {
+		log.Printf("Failed to unpack AppArmorNotif of length %d: %s\n", int(ret), err)
+		DumpBytes(data[:], int(ret))
+		return
+	}
+	return
+}
+
+func SendNotif(fd int, resp AppArmorNotifResp) (err error) {
+	resp.Base.Common.Len = uint16(binary.Size(resp))
+	buffer := new(bytes.Buffer)
+	err = binary.Write(buffer, binary.LittleEndian, resp)
+	if err != nil {
+		log.Panicf("Error encoding response to APPARMOR_NOTIF_RESP - unable to reply: %s", err)
+	}
+	// copy in encoded data
+	data := new([4096]byte)
+	for i := 0; i < buffer.Len(); i++ {
+		data[i], _ = buffer.ReadByte()
+	}
+	ret, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), APPARMOR_NOTIF_SEND, uintptr(unsafe.Pointer(data)))
+	if errno != 0 {
+		err = syscall.Errno(errno)
+		return
+	}
+	if ret != unsafe.Sizeof(resp) {
+		err = errors.New(fmt.Sprintf("Unexpected return value from ioctl: %d", ret))
+		return
+	}
+	return
 }
 
 func main() {
@@ -339,58 +423,16 @@ func main() {
 		for i := 0; i < n; i++ {
 			event := events[i]
 			if event.Events & syscall.EPOLLIN != 0 {
-				// read via ioctl
-				raw := AppArmorNotifCommon{}
-				raw.Len = 4096
-				raw.Version = APPARMOR_NOTIFY_VERSION
-
-				// encode as a 4096 byte array
-				buffer := new(bytes.Buffer)
-				err := binary.Write(buffer, binary.LittleEndian, raw)
+				req, err := RecvNotif(fd)
 				if err != nil {
-					log.Printf("Error encoding header for APPARMOR_NOTIF_RECV ioctl(): %s\n", err)
-				}
-				// set the rest to zero and expand length
-				// of array in the process
-				for i := 0; i < int(raw.Len) - int(unsafe.Sizeof(raw)); i++ {
-					var zero byte = 0
-					err := binary.Write(buffer, binary.LittleEndian, zero)
-					if err != nil {
-						log.Printf("Error encoding remaining data for APPARMOR_NOTIF_RECV ioctl(): %s\n", err)
-					}
-				}
-				data := new([4096]byte)
-				// copy in encoded data
-				for i := 0; i < cap(data); i++ {
-					data[i] = buffer.Next(1)[0]
-				}
-				log.Printf("Calling ioctl recv (data len: %d cap: %d)\n", len(data), cap(data))
-				ret, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), APPARMOR_NOTIF_RECV, uintptr(unsafe.Pointer(data)))
-				if errno != 0 {
-					log.Printf("Error in ioctl(APPARMOR_NOTIF_RECV): %d\n", syscall.Errno(errno))
-					break
-				}
-				if int(ret) <= 0 {
-					log.Printf("Unexpected return value from ioctl: %d\n", ret)
+					log.Printf("Failed to recv notif: %s", err)
 					continue
 				}
-				log.Printf("Received response of size: %d (data len: %d cap: %d)\n", ret, len(data), cap(data))
-				response := ""
-				req, err := UnpackNotif(data[:], int(ret))
-				if (err != nil) {
-					log.Printf("Failed to unpack AppArmorNotif of length %d: %s\n", int(ret), err)
-					for i := 0; i < int(ret); i++ {
-						if i % 15 == 0 {
-							fmt.Printf("\n")
-						}
-						fmt.Printf(" 0x%.2x", data[i])
-					}
-					fmt.Printf("\n")
-					break
-				}
+
 				log.Println("Received req", req)
+				response := ""
 				for  {
-					fmt.Printf("Allow profile: %s to access: '%s' allow 0x%x deny 0x%x error: %d (y/n) >",
+					fmt.Printf("Allow profile: %s to access: '%s' allow 0x%x deny 0x%x error: %d (y/n) > ",
 						req.label(), req.file().name, req.allow(), req.deny(), req.error())
 					line, _ := reader.ReadString('\n')
 					// strip newline etc
@@ -402,7 +444,6 @@ func main() {
 
 				resp := AppArmorNotifResp{}
 				resp.Base.Common.Version = APPARMOR_NOTIFY_VERSION
-				resp.Base.Common.Len = uint16(unsafe.Sizeof(resp))
 				resp.Base.NType = APPARMOR_NOTIF_RESP
 				resp.Base.ID = req.id()
 
@@ -417,26 +458,10 @@ func main() {
 					resp.Allow = req.allow()
 					resp.Deny = req.deny()
 				}
-
-				buffer = new(bytes.Buffer)
-				err = binary.Write(buffer, binary.LittleEndian, resp)
+				err = SendNotif(fd, resp)
 				if err != nil {
-					log.Panicf("Error encoding response to APPARMOR_NOTIF_RESP - unable to reply: %s", err)
+					log.Printf("Failed to send notif: %s", err)
 				}
-				// copy in encoded data
-				for i := 0; i < cap(data); i++ {
-					data[i] = buffer.Next(1)[0]
-				}
-				ret, _, errno = syscall.Syscall(syscall.SYS_IOCTL, uintptr(event.Fd), APPARMOR_NOTIF_SEND, uintptr(unsafe.Pointer(data)))
-				if errno != 0 {
-					log.Println("Error in ioctl(APPARMOR_NOTIF_SEND)", syscall.Errno(errno))
-					continue
-				}
-				if ret != unsafe.Sizeof(resp) {
-					log.Println("Unexpected return value from ioctl", ret)
-					continue
-				}
-				log.Printf("replied\n")
 			} else if event.Events & syscall.EPOLLOUT != 0 {
 				// ignore EPOLLOUT for now
 				continue

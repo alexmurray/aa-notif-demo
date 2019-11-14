@@ -27,7 +27,7 @@ func TestPolicyNotificationRegister(t *testing.T) {
 		expected = true
 	}
 	// if fd is invalid or already have err then don't expect this to work
-	err = PolicyNotificationRegister(fd, APPARMOR_MODESET_SYNC)
+	err = PolicyNotificationRegister(fd, APPARMOR_MODESET_USER)
 	if expected  {
 		if err == nil {
 			t.Error("Expected error but success!")
@@ -62,52 +62,52 @@ func TestStrlen(t *testing.T) {
 	}
 }
 
-func Encode(t *testing.T, file *AppArmorNotifFile, length int) (notif Notif, err error) {
+func Encode(t *testing.T, file *AppArmorNotifFile, label string, name string) (notif Notif, err error) {
 	// TODO - will only work on LittleEndian platforms
 	buffer := new(bytes.Buffer)
-	// can't write out whole file as contains a string - so write in
-	// parts and encode the Name manually
-	err = binary.Write(buffer, binary.LittleEndian, file.Op)
+	// write label after file itself
+	file.Op.Base.Common.Len = uint16(int(binary.Size(*file)) + len(label) + len(name) + 2)
+	file.Op.Label = uint32(binary.Size(*file))
+	// write name after label with nul terminator
+	file.Name = uint32(int(binary.Size(*file)) + len(label) + 1)
+	err = binary.Write(buffer, binary.LittleEndian, *file)
+
+	err = binary.Write(buffer, binary.LittleEndian, []byte(label))
 	if err != nil {
 		t.Error("Failed to encode for testing", err)
 	}
-	err = binary.Write(buffer, binary.LittleEndian, file.SUID)
+	// add trailing NUL
+	nul := string(0)
+	err = binary.Write(buffer, binary.LittleEndian, []byte(nul))
 	if err != nil {
 		t.Error("Failed to encode for testing", err)
 	}
-	err = binary.Write(buffer, binary.LittleEndian, file.OUID)
+	err = binary.Write(buffer, binary.LittleEndian, []byte(name))
 	if err != nil {
 		t.Error("Failed to encode for testing", err)
 	}
-	var Name uint32 = uint32(len(file.Name))
-	err = binary.Write(buffer, binary.LittleEndian, Name)
+	// add trailing NUL
+	err = binary.Write(buffer, binary.LittleEndian, []byte(nul))
 	if err != nil {
 		t.Error("Failed to encode for testing", err)
 	}
-	// encode Name as a byte array with a trailing 0
-	if Name > 0 {
-		file.Name += string(0)
-		err = binary.Write(buffer, binary.LittleEndian, []byte(file.Name))
-		if err != nil {
-			t.Error("Failed to encode for testing", err)
-		}
-	}
-	if length == -1 {
-		length = buffer.Cap()
-	}
-	file.Op.Base.Common.Len = uint16(length)
-	return UnpackNotif(buffer.Bytes(), length)
-}
-func EncodeAndExpectNoError(t *testing.T, file *AppArmorNotifFile, len int) {
-	notif, err := Encode(t, file, len)
-	if notif == nil {
-		t.Error("Expected UnpackNotif() to pass and return a Notif ", err)
-	}
-	t.Log("Expected pass", notif)
+	bytes := buffer.Bytes()
+	return UnpackNotif(bytes, buffer.Len())
 }
 
-func EncodeAndExpectError(t *testing.T, file *AppArmorNotifFile, len int) {
-	notif, err := Encode(t, file, len)
+func EncodeAndExpectNoError(t *testing.T, file *AppArmorNotifFile, label string, name string) (notif Notif) {
+	notif, err := Encode(t, file, label, name)
+	if notif == nil {
+		t.Error("Expected UnpackNotif() to pass and return a Notif ", err)
+		// fake one so other code doesn't bomb out
+		notif = NotifFile{}
+	}
+	t.Log("Expected pass", notif)
+	return notif
+}
+
+func EncodeAndExpectError(t *testing.T, file *AppArmorNotifFile, label string, name string) {
+	notif, err := Encode(t, file, label, name)
 	if notif != nil || err == nil {
 		t.Error("Expected UnpackNotif() to return an error ", notif)
 	}
@@ -115,24 +115,48 @@ func EncodeAndExpectError(t *testing.T, file *AppArmorNotifFile, len int) {
 }
 
 func TestUnpackNotif(t *testing.T) {
-	// test with short data
+	// test with empty data
 	file := AppArmorNotifFile{}
-	EncodeAndExpectError(t, &file, 10)
+	label := ""
+	name := ""
+	EncodeAndExpectError(t, &file, label, name)
 
 	// progressively set various parts until we get success
-	// length (-1 means use full encoded length)
-	EncodeAndExpectError(t, &file, -1)
-
-	// version
+	// version - has no class
 	file.Op.Base.Common.Version = APPARMOR_NOTIFY_VERSION
-	EncodeAndExpectError(t, &file, -1)
+	EncodeAndExpectError(t, &file, label, name)
 
-	// op
-	file.Op.Op = AA_CLASS_FILE
-	EncodeAndExpectNoError(t, &file, -1)
+	// Class
+	file.Op.Class = AA_CLASS_FILE
+	notif := EncodeAndExpectNoError(t, &file, label, name)
+	if notif.class() != AA_CLASS_FILE {
+		t.Error("Failed to decode correctly")
+	}
+	if notif.label() != label {
+		t.Errorf("Failed to decode label: %s != %s", notif.label(), label)
+	}
+	if notif.file().name != name {
+		t.Errorf("Failed to decode name: %s != %s", notif.file().name, name)
+	}
 
-	file.Name = "foo"
-	EncodeAndExpectNoError(t, &file, -1)
+	// label
+	label = "barishfoo"
+	notif = EncodeAndExpectNoError(t, &file, label, name)
+	if notif.label() != label {
+		t.Errorf("Failed to decode label: %s != %s", notif.label(), label)
+	}
+	if notif.file().name != name {
+		t.Errorf("Failed to decode name: %s != %s", notif.file().name, name)
+	}
+	// name
+	name = "fooishbar"
+	notif = EncodeAndExpectNoError(t, &file, label, name)
+	if notif.label() != label {
+		t.Errorf("Failed to decode label: %s != %s", notif.label(), label)
+	}
+	if notif.file().name != name {
+		t.Errorf("Failed to decode name: %s != %s", notif.file().name, name)
+	}
 
 	// file.file = AA_CLASS_FILE
 	// Notif, err = UnpackNotif(buffer.Bytes(), cap(buffer))

@@ -416,6 +416,7 @@ func main() {
 					log.Println("Unexpected return value from ioctl", ret)
 					continue
 				}
+				log.Printf("replied\n")
 			} else {
 				log.Printf("Unhandled epoll event 0x%x\n", event.Events)
 			}

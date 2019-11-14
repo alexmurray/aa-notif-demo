@@ -131,6 +131,7 @@ type Notif interface {
 	class() uint16
 	op() uint16
 	label() string
+	file() NotifFile
 }
 
 type NotifFile struct {
@@ -170,6 +171,10 @@ func (n NotifFile) op() uint16 {
 
 func (n NotifFile) label() string {
 	return n.base.label
+}
+
+func (n NotifFile) file() NotifFile {
+	return n
 }
 
 func PolicyNotificationOpen() (listener int, err error) {
@@ -328,6 +333,9 @@ func main() {
 			// TODO - handle EAGAIN etc? but exit for now
 			break
 		}
+
+		// read input from the user to authorise or not
+		reader := bufio.NewReader(os.Stdin)
 		for i := 0; i < n; i++ {
 			event := events[i]
 			if event.Events & syscall.EPOLLIN != 0 {
@@ -368,8 +376,11 @@ func main() {
 					continue
 				}
 				log.Println("Received req", req)
-
-				// TODO - implement decision logic :)
+				fmt.Printf("Allow profile: %s to access: '%s' allow 0x%x deny 0x%x error: %d (y/n) >",
+					req.label(), req.file().name, req.allow(), req.deny(), req.error())
+				line, _ := reader.ReadString('\n')
+				// strip newline etc
+				response := strings.Replace(line, "\n", "", -1)
 
 				resp := AppArmorNotifResp{}
 				resp.Base.Common.Version = APPARMOR_NOTIFY_VERSION
@@ -377,10 +388,17 @@ func main() {
 				resp.Base.NType = APPARMOR_NOTIF_RESP
 				resp.Base.ID = req.id()
 
-				// send back response as ok
-				resp.Error = 0
-				resp.Allow = req.allow()
-				resp.Deny = 0
+				if strings.Compare(response, "y") == 0 {
+					fmt.Println("  allowing access")
+					resp.Error = 0
+					resp.Allow = req.allow() | req.deny()
+					resp.Deny = 0
+				} else {
+					fmt.Println("  denying access")
+					resp.Error = req.error()
+					resp.Allow = req.allow()
+					resp.Deny = req.deny()
+				}
 
 				buffer = new(bytes.Buffer)
 				err = binary.Write(buffer, binary.LittleEndian, resp)

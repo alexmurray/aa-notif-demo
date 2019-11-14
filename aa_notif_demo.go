@@ -131,7 +131,7 @@ type Notif interface {
 	class() uint16
 	op() uint16
 	label() string
-	file() NotifFile
+	file() *NotifFile
 }
 
 type NotifFile struct {
@@ -173,8 +173,8 @@ func (n NotifFile) label() string {
 	return n.base.label
 }
 
-func (n NotifFile) file() NotifFile {
-	return n
+func (n NotifFile) file() *NotifFile {
+	return &n
 }
 
 func PolicyNotificationOpen() (listener int, err error) {

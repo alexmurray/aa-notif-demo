@@ -352,35 +352,53 @@ func main() {
 				}
 				// set the rest to zero and expand length
 				// of array in the process
-				for i := 0; i < int(raw.Len) - 4; i++ {
+				for i := 0; i < int(raw.Len) - int(unsafe.Sizeof(raw)); i++ {
 					var zero byte = 0
 					err := binary.Write(buffer, binary.LittleEndian, zero)
 					if err != nil {
 						log.Printf("Error encoding remaining data for APPARMOR_NOTIF_RECV ioctl(): %s\n", err)
 					}
 				}
-				data := buffer.Bytes()
-				ret, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(event.Fd), APPARMOR_NOTIF_RECV, uintptr(unsafe.Pointer(&data)))
+				data := new([4096]byte)
+				// copy in encoded data
+				for i := 0; i < cap(data); i++ {
+					data[i] = buffer.Next(1)[0]
+				}
+				log.Printf("Calling ioctl recv (data len: %d cap: %d)\n", len(data), cap(data))
+				ret, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), APPARMOR_NOTIF_RECV, uintptr(unsafe.Pointer(data)))
 				if errno != 0 {
 					log.Printf("Error in ioctl(APPARMOR_NOTIF_RECV): %d\n", syscall.Errno(errno))
-					continue
+					break
 				}
 				if int(ret) <= 0 {
 					log.Printf("Unexpected return value from ioctl: %d\n", ret)
 					continue
 				}
-				req, err := UnpackNotif(data, int(ret))
+				log.Printf("Received response of size: %d (data len: %d cap: %d)\n", ret, len(data), cap(data))
+				response := ""
+				req, err := UnpackNotif(data[:], int(ret))
 				if (err != nil) {
-					log.Printf("Failed to unpack AppArmorNotif of length %d\n", int(ret))
-					// TODO - we should still send a response
-					continue
+					log.Printf("Failed to unpack AppArmorNotif of length %d: %s\n", int(ret), err)
+					for i := 0; i < int(ret); i++ {
+						if i % 15 == 0 {
+							fmt.Printf("\n")
+						}
+						fmt.Printf(" 0x%.2x", data[i])
+					}
+					fmt.Printf("\n")
+					break
 				}
 				log.Println("Received req", req)
-				fmt.Printf("Allow profile: %s to access: '%s' allow 0x%x deny 0x%x error: %d (y/n) >",
-					req.label(), req.file().name, req.allow(), req.deny(), req.error())
-				line, _ := reader.ReadString('\n')
-				// strip newline etc
-				response := strings.Replace(line, "\n", "", -1)
+				for  {
+					fmt.Printf("Allow profile: %s to access: '%s' allow 0x%x deny 0x%x error: %d (y/n) >",
+						req.label(), req.file().name, req.allow(), req.deny(), req.error())
+					line, _ := reader.ReadString('\n')
+					// strip newline etc
+					response = strings.Replace(line, "\n", "", -1)
+					if (strings.Compare(response, "y") == 0 || strings.Compare(response, "n") == 0) {
+						break
+					}
+				}
 
 				resp := AppArmorNotifResp{}
 				resp.Base.Common.Version = APPARMOR_NOTIFY_VERSION
@@ -403,11 +421,13 @@ func main() {
 				buffer = new(bytes.Buffer)
 				err = binary.Write(buffer, binary.LittleEndian, resp)
 				if err != nil {
-					log.Println("Error encoding response to APPARMOR_NOTIF_RESP - unable to reply", err)
-					continue
+					log.Panicf("Error encoding response to APPARMOR_NOTIF_RESP - unable to reply: %s", err)
 				}
-				data = buffer.Bytes()
-				ret, _, errno = syscall.Syscall(syscall.SYS_IOCTL, uintptr(event.Fd), APPARMOR_NOTIF_SEND, uintptr(unsafe.Pointer(&data)))
+				// copy in encoded data
+				for i := 0; i < cap(data); i++ {
+					data[i] = buffer.Next(1)[0]
+				}
+				ret, _, errno = syscall.Syscall(syscall.SYS_IOCTL, uintptr(event.Fd), APPARMOR_NOTIF_SEND, uintptr(unsafe.Pointer(data)))
 				if errno != 0 {
 					log.Println("Error in ioctl(APPARMOR_NOTIF_SEND)", syscall.Errno(errno))
 					continue

@@ -55,7 +55,7 @@ const APPARMOR_NOTIF_IS_ID_VALID = 0x8008F803
 const APPARMOR_NOTIF_RECV = 0xC008F804
 const APPARMOR_NOTIF_SEND = 0xC008F805
 
-const APPARMOR_NOTIFY_VERSION = 2
+const APPARMOR_NOTIFY_VERSION = 3
 
 /* base notification struct embedded as head of notifications to userspace */
 type AppArmorNotifCommon struct {
@@ -77,7 +77,6 @@ type AppArmorNotif struct {
 	Reserved  uint8
 	ID        uint64 /* unique id, not gloablly unique*/
 	Error     int32  /* error if unchanged */
-	Padding   int32  // pad to 64-bit aligned
 }
 
 type AppArmorNotifUpdate struct {
@@ -94,14 +93,13 @@ type AppArmorNotifResp struct {
 }
 
 type AppArmorNotifOp struct {
-	Base    AppArmorNotif
-	Allow   uint32
-	Deny    uint32
-	PID     PID    /* pid of task causing notification */
-	Label   uint32 /* offset into data */
-	Class   uint16
-	Op      uint16
-	Padding uint32 // pad to 64 bit aligned
+	Base  AppArmorNotif
+	Allow uint32
+	Deny  uint32
+	PID   PID    /* pid of task causing notification */
+	Label uint32 /* offset into data */
+	Class uint16
+	Op    uint16
 }
 
 type AppArmorNotifFile struct {

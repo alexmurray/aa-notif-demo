@@ -63,41 +63,40 @@ func TestStrlen(t *testing.T) {
 	}
 }
 
-func Encode(t *testing.T, file *AppArmorNotifFile, label string, name string) (notif Notif, err error) {
-	// TODO - will only work on LittleEndian platforms
+func Encode(t *testing.T, file *AppArmorNotifFile, label string, name string, order binary.ByteOrder) (notif Notif, err error) {
 	buffer := new(bytes.Buffer)
 	// write label after file itself
 	file.Op.Base.Common.Len = uint16(int(binary.Size(*file)) + len(label) + len(name) + 2)
 	file.Op.Label = uint32(binary.Size(*file))
 	// write name after label with nul terminator
 	file.Name = uint32(int(binary.Size(*file)) + len(label) + 1)
-	err = binary.Write(buffer, binary.LittleEndian, *file)
+	err = binary.Write(buffer, order, *file)
 
-	err = binary.Write(buffer, binary.LittleEndian, []byte(label))
+	err = binary.Write(buffer, order, []byte(label))
 	if err != nil {
 		t.Error("Failed to encode for testing", err)
 	}
 	// add trailing NUL
 	nul := string(0)
-	err = binary.Write(buffer, binary.LittleEndian, []byte(nul))
+	err = binary.Write(buffer, order, []byte(nul))
 	if err != nil {
 		t.Error("Failed to encode for testing", err)
 	}
-	err = binary.Write(buffer, binary.LittleEndian, []byte(name))
+	err = binary.Write(buffer, order, []byte(name))
 	if err != nil {
 		t.Error("Failed to encode for testing", err)
 	}
 	// add trailing NUL
-	err = binary.Write(buffer, binary.LittleEndian, []byte(nul))
+	err = binary.Write(buffer, order, []byte(nul))
 	if err != nil {
 		t.Error("Failed to encode for testing", err)
 	}
 	bytes := buffer.Bytes()
-	return UnpackNotif(bytes, buffer.Len())
+	return UnpackNotif(bytes, buffer.Len(), order)
 }
 
-func EncodeAndExpectNoError(t *testing.T, file *AppArmorNotifFile, label string, name string) (notif Notif) {
-	notif, err := Encode(t, file, label, name)
+func EncodeAndExpectNoError(t *testing.T, file *AppArmorNotifFile, label string, name string, order binary.ByteOrder) (notif Notif) {
+	notif, err := Encode(t, file, label, name, order)
 	if notif == nil {
 		t.Error("Expected UnpackNotif() to pass and return a Notif ", err)
 		// fake one so other code doesn't bomb out
@@ -107,8 +106,8 @@ func EncodeAndExpectNoError(t *testing.T, file *AppArmorNotifFile, label string,
 	return notif
 }
 
-func EncodeAndExpectError(t *testing.T, file *AppArmorNotifFile, label string, name string) {
-	notif, err := Encode(t, file, label, name)
+func EncodeAndExpectError(t *testing.T, file *AppArmorNotifFile, label string, name string, order binary.ByteOrder) {
+	notif, err := Encode(t, file, label, name, order)
 	if notif != nil || err == nil {
 		t.Error("Expected UnpackNotif() to return an error ", notif)
 	}
@@ -116,20 +115,21 @@ func EncodeAndExpectError(t *testing.T, file *AppArmorNotifFile, label string, n
 }
 
 func TestUnpackNotif(t *testing.T) {
+	order := binary.LittleEndian
 	// test with empty data
 	file := AppArmorNotifFile{}
 	label := ""
 	name := ""
-	EncodeAndExpectError(t, &file, label, name)
+	EncodeAndExpectError(t, &file, label, name, order)
 
 	// progressively set various parts until we get success
 	// version - has no class
 	file.Op.Base.Common.Version = APPARMOR_NOTIFY_VERSION
-	EncodeAndExpectError(t, &file, label, name)
+	EncodeAndExpectError(t, &file, label, name, order)
 
 	// Class
 	file.Op.Class = AA_CLASS_FILE
-	notif := EncodeAndExpectNoError(t, &file, label, name)
+	notif := EncodeAndExpectNoError(t, &file, label, name, order)
 	if notif.class() != AA_CLASS_FILE {
 		t.Error("Failed to decode correctly")
 	}
@@ -142,7 +142,8 @@ func TestUnpackNotif(t *testing.T) {
 
 	// label
 	label = "barishfoo"
-	notif = EncodeAndExpectNoError(t, &file, label, name)
+	// try big-endian
+	notif = EncodeAndExpectNoError(t, &file, label, name, binary.BigEndian)
 	if notif.label() != label {
 		t.Errorf("Failed to decode label: %s != %s", notif.label(), label)
 	}
@@ -151,7 +152,7 @@ func TestUnpackNotif(t *testing.T) {
 	}
 	// name
 	name = "fooishbar"
-	notif = EncodeAndExpectNoError(t, &file, label, name)
+	notif = EncodeAndExpectNoError(t, &file, label, name, order)
 	if notif.label() != label {
 		t.Errorf("Failed to decode label: %s != %s", notif.label(), label)
 	}
@@ -159,7 +160,7 @@ func TestUnpackNotif(t *testing.T) {
 		t.Errorf("Failed to decode name: %s != %s", notif.file().name, name)
 	}
 
-	// test from actual bytes
+	// test from actual bytes - these are little endian
 	data := []byte{0x66, 0x00, 0x03, 0x00, 0x04, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 		0x00, 0xf3, 0xff, 0xff, 0xff, 0x04, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00,
 		0x00, 0x00, 0x34, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -167,7 +168,7 @@ func TestUnpackNotif(t *testing.T) {
 		0x2f, 0x6d, 0x61, 0x6e, 0x2f, 0x2f, 0x6e, 0x75, 0x6c, 0x6c, 0x2d, 0x2f, 0x75, 0x73, 0x72,
 		0x2f, 0x62, 0x69, 0x6e, 0x2f, 0x6c, 0x65, 0x73, 0x73, 0x00, 0x2f, 0x65, 0x74, 0x63, 0x2f,
 		0x6c, 0x64, 0x2e, 0x73, 0x6f, 0x2e, 0x63, 0x61, 0x63, 0x68, 0x65, 0x00}
-	notif, err := UnpackNotif(data, len(data))
+	notif, err := UnpackNotif(data, len(data), binary.LittleEndian)
 	if err != nil {
 		t.Errorf("Failed to decode notif: %s", err)
 	} else {
@@ -192,10 +193,4 @@ func TestUnpackNotif(t *testing.T) {
 				notif.file().name)
 		}
 	}
-	// file.file = AA_CLASS_FILE
-	// Notif, err = UnpackNotif(buffer.Bytes(), cap(buffer))
-	// if Notif != nil || err == nil {
-	// 	t.Errorf("Expected UnpackNotif() to return an error")
-	// }
-	// t.Log(err)
 }

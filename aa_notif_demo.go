@@ -235,12 +235,12 @@ func Strlen(buffer []byte) (size int) {
 	return len(buffer)
 }
 
-func UnpackNotif(buffer []byte, len int) (req Notif, err error) {
+func UnpackNotif(buffer []byte, len int, order binary.ByteOrder) (req Notif, err error) {
 	op := new(AppArmorNotifOp)
 	buf := bytes.NewReader(buffer)
 
 	// progressively read and check parameters
-	err = binary.Read(buf, binary.LittleEndian, op)
+	err = binary.Read(buf, order, op)
 	if err != nil {
 		return nil, err
 	}
@@ -272,15 +272,15 @@ func UnpackNotif(buffer []byte, len int) (req Notif, err error) {
 	case AA_CLASS_FILE:
 		// decode remaining file parts
 		file := AppArmorNotifFile{}
-		err = binary.Read(buf, binary.LittleEndian, &file.SUID)
+		err = binary.Read(buf, order, &file.SUID)
 		if err != nil {
 			return nil, err
 		}
-		err = binary.Read(buf, binary.LittleEndian, &file.OUID)
+		err = binary.Read(buf, order, &file.OUID)
 		if err != nil {
 			return nil, err
 		}
-		err = binary.Read(buf, binary.LittleEndian, &file.Name)
+		err = binary.Read(buf, order, &file.Name)
 		if err != nil {
 			return nil, err
 		}
@@ -313,7 +313,7 @@ func DumpBytes(data []byte, len int) {
 	fmt.Printf("\n")
 }
 
-func RecvNotif(fd int) (req Notif, err error) {
+func RecvNotif(fd int, order binary.ByteOrder) (req Notif, err error) {
 	// read via ioctl
 	raw := AppArmorNotifCommon{}
 	raw.Len = 4096
@@ -321,7 +321,7 @@ func RecvNotif(fd int) (req Notif, err error) {
 
 	// encode as a 4096 byte array
 	buffer := new(bytes.Buffer)
-	err = binary.Write(buffer, binary.LittleEndian, raw)
+	err = binary.Write(buffer, order, raw)
 	if err != nil {
 		return
 	}
@@ -329,7 +329,7 @@ func RecvNotif(fd int) (req Notif, err error) {
 	// of array in the process
 	for i := 0; i < int(raw.Len)-int(buffer.Len()); i++ {
 		var zero byte = 0
-		err = binary.Write(buffer, binary.LittleEndian, zero)
+		err = binary.Write(buffer, order, zero)
 		if err != nil {
 			return
 		}
@@ -348,7 +348,7 @@ func RecvNotif(fd int) (req Notif, err error) {
 		err = errors.New(fmt.Sprintf("Unexpected return value from ioctl: %d\n", ret))
 		return
 	}
-	req, err = UnpackNotif(data[:], int(ret))
+	req, err = UnpackNotif(data[:], int(ret), order)
 	if err != nil {
 		log.Printf("Failed to unpack AppArmorNotif of length %d: %s\n", int(ret), err)
 		DumpBytes(data[:], int(ret))
@@ -357,10 +357,10 @@ func RecvNotif(fd int) (req Notif, err error) {
 	return
 }
 
-func SendNotif(fd int, resp AppArmorNotifResp) (err error) {
+func SendNotif(fd int, resp AppArmorNotifResp, order binary.ByteOrder) (err error) {
 	resp.Base.Common.Len = uint16(binary.Size(resp))
 	buffer := new(bytes.Buffer)
-	err = binary.Write(buffer, binary.LittleEndian, resp)
+	err = binary.Write(buffer, order, resp)
 	if err != nil {
 		log.Panicf("Error encoding response to APPARMOR_NOTIF_RESP - unable to reply: %s", err)
 	}
@@ -381,7 +381,30 @@ func SendNotif(fd int, resp AppArmorNotifResp) (err error) {
 	return
 }
 
+func GetNativeByteOrder() (order binary.ByteOrder) {
+	buf := [2]byte{}
+	*(*uint16)(unsafe.Pointer(&buf[0])) = uint16(0xABCD)
+
+	switch buf {
+	case [2]byte{0xCD, 0xAB}:
+		order = binary.LittleEndian
+	case [2]byte{0xAB, 0xCD}:
+		order = binary.BigEndian
+	default:
+		panic("Could not determine native byte order.")
+	}
+	return order
+}
+
 func main() {
+	// detect endianness
+	order := GetNativeByteOrder()
+	if (order == binary.LittleEndian) {
+		log.Printf("Running on little-endian host")
+	} else {
+		log.Printf("Running on big-endian host")
+	}
+
 	fd, err := PolicyNotificationOpen()
 	if err != nil {
 		log.Fatalf("Failed to open AppArmor notification interface: %s", err)
@@ -422,7 +445,7 @@ func main() {
 		for i := 0; i < n; i++ {
 			event := events[i]
 			if event.Events&syscall.EPOLLIN != 0 {
-				req, err := RecvNotif(fd)
+				req, err := RecvNotif(fd, order)
 				if err != nil {
 					log.Printf("Failed to recv notif: %s", err)
 					continue
@@ -457,7 +480,7 @@ func main() {
 					resp.Allow = req.allow()
 					resp.Deny = req.deny()
 				}
-				err = SendNotif(fd, resp)
+				err = SendNotif(fd, resp, order)
 				if err != nil {
 					log.Printf("Failed to send notif: %s", err)
 				}
